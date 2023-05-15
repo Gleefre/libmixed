@@ -9,6 +9,7 @@ struct repeat_segment_data{
   float time;
   uint32_t samplerate;
   enum mixed_repeat_mode mode;
+  bool wait_for_zero_cross;
 };
 
 int repeat_segment_data_resize_buffer(struct repeat_segment_data *data, uint32_t new_size) {
@@ -88,7 +89,12 @@ int repeat_segment_mix_record(struct mixed_segment *segment){
   mixed_buffer_request_read(&in, &samples, data->in);
   mixed_buffer_request_write(&out, &samples, data->out);
   for(uint32_t i=0; i<samples; ++i){
-    buf[index] = in[i];
+    if (!data->wait_for_zero_cross){
+      buf[index] = in[i];
+    }
+    if (buf[index] * buf[(index + 1)%repeat_samples] <= 0.0f) {
+      data->wait_for_zero_cross = false;
+    }
     out[i] = buf[index];
     index = (index+1)%repeat_samples;
   }
@@ -111,6 +117,12 @@ int repeat_segment_mix_play(struct mixed_segment *segment){
   mixed_buffer_request_read(&in, &samples, data->in);
   mixed_buffer_request_write(&out, &samples, data->out);
   for(uint32_t i=0; i<samples; ++i){
+    if (data->wait_for_zero_cross){
+      buf[index] = in[i];
+    }
+    if (buf[index] * buf[(index + 1)%repeat_samples] <= 0.0f) {
+      data->wait_for_zero_cross = false;
+    }
     out[i] = buf[index];
     index = (index+1)%repeat_samples;
   }
@@ -133,7 +145,12 @@ int repeat_segment_mix_record_once(struct mixed_segment *segment){
   mixed_buffer_request_read(&in, &samples, data->in);
   mixed_buffer_request_write(&out, &samples, data->out);
   for(uint32_t i=0; i<samples; ++i){
-    buf[index] = in[i];
+    if (!data->wait_for_zero_cross){
+      buf[index] = in[i];
+    }
+    if (buf[index] * buf[(index + 1)%repeat_samples] <= 0.0f) {
+      data->wait_for_zero_cross = false;
+    }
     out[i] = buf[index];
     index = index+1;
   }
@@ -143,6 +160,7 @@ int repeat_segment_mix_record_once(struct mixed_segment *segment){
   if (index == repeat_samples) {
     data->buffer_index = 0;
     data->mode = MIXED_PLAY;
+    data->wait_for_zero_cross = true;
     segment->mix = repeat_segment_mix_play;
     return 1;
   }
@@ -239,9 +257,24 @@ int repeat_segment_set(uint32_t field, void *value, struct mixed_segment *segmen
     }
     data->mode = *(enum mixed_repeat_mode *)value;
     switch(data->mode){
-    case MIXED_RECORD: segment->mix = repeat_segment_mix_record; break;
-    case MIXED_PLAY: segment->mix = repeat_segment_mix_play; break;
-    case MIXED_RECORD_ONCE: segment->mix = repeat_segment_mix_record_once; break;
+    case MIXED_RECORD:
+      if (segment->mix == repeat_segment_mix_play){
+        data->wait_for_zero_cross = true;
+      }
+      segment->mix = repeat_segment_mix_record;
+      break;
+    case MIXED_PLAY:
+      if (segment->mix != repeat_segment_mix_play){
+        data->wait_for_zero_cross = true;
+      }
+      segment->mix = repeat_segment_mix_play;
+      break;
+    case MIXED_RECORD_ONCE:
+      if (segment->mix == repeat_segment_mix_play){
+        data->wait_for_zero_cross = true;
+      }
+      segment->mix = repeat_segment_mix_record_once;
+      break;
     }
     break;
   case MIXED_REPEAT_POSITION:
@@ -298,6 +331,7 @@ MIXED_EXPORT int mixed_make_segment_repeat(float time, uint32_t samplerate, stru
   data->mode = MIXED_RECORD;
   data->time = time;
   data->samplerate = samplerate;
+  data->wait_for_zero_cross = false;
 
   segment->free = repeat_segment_free;
   segment->start = repeat_segment_start;
